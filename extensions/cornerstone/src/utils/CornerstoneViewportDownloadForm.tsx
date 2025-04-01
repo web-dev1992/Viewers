@@ -4,7 +4,7 @@ import { getEnabledElement, StackViewport, BaseVolumeViewport } from '@cornersto
 import { ToolGroupManager } from '@cornerstonejs/tools';
 import { getEnabledElement as OHIFgetEnabledElement } from '../state';
 import { useSystem } from '@ohif/core/src';
-
+import { PDFDocument } from 'pdf-lib';
 const DEFAULT_SIZE = 512;
 const MAX_TEXTURE_SIZE = 10000;
 const VIEWPORT_ID = 'cornerstone-viewport-download-form';
@@ -17,6 +17,10 @@ const FILE_TYPE_OPTIONS = [
   {
     value: 'png',
     label: 'PNG',
+  },
+  {
+    value: 'pdf',
+    label: 'PDF',
   },
 ];
 
@@ -182,12 +186,41 @@ const CornerstoneViewportDownloadForm = ({
     }
 
     const canvas = await html2canvas(divForDownloadViewport as HTMLElement);
-    const link = document.createElement('a');
-    link.download = `${filename}.${fileType}`;
-    link.href = canvas.toDataURL(`image/${fileType}`, 1.0);
-    link.click();
-  };
+    if (fileType === 'pdf') {
+      // Client-side PDF generation
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([canvas.width, canvas.height]);
 
+      const pngImage = await pdfDoc.embedPng(canvas.toDataURL('image/png'));
+      page.drawImage(pngImage, {
+        x: 0,
+        y: 0,
+        width: canvas.width,
+        height: canvas.height,
+      });
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      triggerDownload(URL.createObjectURL(blob), `${filename}.pdf`);
+    } else {
+      // Handle JPG/PNG
+      const quality = fileType === 'jpg' ? 0.92 : 1.0; // JPG compression
+      triggerDownload(canvas.toDataURL(`image/${fileType}`, quality), `${filename}.${fileType}`);
+    }
+  };
+  const triggerDownload = (url: string, filename: string) => {
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Clean up object URLs after download
+    if (url.startsWith('blob:')) {
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+    }
+  };
   const ViewportDownloadFormNew = customizationService.getCustomization(
     'ohif.captureViewportModal'
   );
