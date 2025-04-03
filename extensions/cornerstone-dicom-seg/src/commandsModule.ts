@@ -1,6 +1,14 @@
 import dcmjs from 'dcmjs';
 import { Types } from '@ohif/core';
-import { cache, metaData } from '@cornerstonejs/core';
+import html2canvas from 'html2canvas';
+import {
+  cache,
+  metaData,
+  getEnabledElement,
+  StackViewport,
+  BaseVolumeViewport,
+} from '@cornerstonejs/core';
+import { PDFDocument, rgb } from 'pdf-lib';
 import {
   segmentation as cornerstoneToolsSegmentation,
   Enums as cornerstoneToolsEnums,
@@ -53,7 +61,12 @@ const commandsModule = ({
     viewportGridService,
     toolGroupService,
     customizationService,
+    cornerstoneViewportService,
   } = servicesManager.services as AppTypes.Services;
+
+  const VIEWPORT_ID = 'segmentation-viewport-download-form';
+  const DEFAULT_SIZE = 512;
+  const MAX_TEXTURE_SIZE = 10000;
 
   const actions = {
     /**
@@ -215,6 +228,146 @@ const commandsModule = ({
 
       downloadDICOMData(generatedSegmentation.dataset, `${segmentationInOHIF.label}`);
     },
+
+    /**
+     * Sends segmentation info (based on the provided segmentation ID)
+     *  and the viewport image  to the backend to provide a pdf file.
+     * This function retrieves the associated segmentation and
+     * uses it to generate the corresponding DICOM dataset, which
+     * is then downloaded with an appropriate filename.
+     *
+     * @param {Object} params - Parameters for the function.
+     * @param params.segmentationId - ID of the segmentation to be downloaded.
+     *
+     */
+    // downloadSegmentationPdf: ({ segmentationId }) => {
+    //   const segmentationInOHIF = segmentationService.getSegmentation(segmentationId);
+    //   const generatedSegmentation = actions.generateSegmentation({
+    //     segmentationId,
+    //   });
+    //   console.table(generatedSegmentation.dataset);
+    //   downloadDICOMData(generatedSegmentation.dataset, `${segmentationInOHIF.label}`);
+    //   //TODO: find the viewport image and send it to backend to overlay the segmentation dataset on the image
+    // },
+
+    downloadSegmentationPdf: async ({ segmentationId, viewportId = null }) => {
+      try {
+        // 1. Get the segmentation data
+        const segmentationInOHIF = segmentationService.getSegmentation(segmentationId);
+        if (!segmentationInOHIF) {
+          throw new Error('Segmentation not found');
+        }
+
+        // First try to get the segmentation from the state
+        let segmentation;
+        try {
+          segmentation = cornerstoneToolsSegmentation.state.getSegmentation(segmentationId);
+          if (!segmentation || !segmentation.representationData?.Labelmap?.imageIds) {
+            throw new Error('Invalid segmentation data');
+          }
+        } catch (error) {
+          console.error('Error getting segmentation:', error);
+          throw new Error('Failed to load segmentation data');
+        }
+
+        // 2. Get the viewport element to capture
+        const targetViewportId = viewportId || viewportGridService.getActiveViewportId();
+        const viewportElement = document.querySelector(
+          `div[data-viewport-uid="${targetViewportId}"]`
+        );
+
+        if (!viewportElement) {
+          throw new Error('Viewport element not found');
+        }
+
+        // 3. Capture the viewport as an image first since it's less likely to fail
+        const canvas = await html2canvas(viewportElement as HTMLElement);
+
+        // 4. Now try to generate the segmentation data
+        let generatedSegmentation;
+        try {
+          generatedSegmentation = actions.generateSegmentation({
+            segmentationId,
+          });
+        } catch (error) {
+          console.error('Error generating segmentation:', error);
+          // Continue with just the viewport image if segmentation fails
+          generatedSegmentation = {
+            metadata: [],
+          };
+        }
+
+        // 5. Create PDF and add both the image and segmentation info
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([canvas.width, canvas.height]);
+
+        // Add the viewport image
+        const pngImage = await pdfDoc.embedPng(canvas.toDataURL('image/png'));
+        page.drawImage(pngImage, {
+          x: 0,
+          y: 0,
+          width: canvas.width,
+          height: canvas.height,
+        });
+
+        // Add segmentation information as text
+        const { metadata = [] } = generatedSegmentation; // Default to empty array if metadata is undefined
+        const segmentInfo =
+          metadata.length > 0
+            ? metadata
+                .map(segment => `- Segment ${segment.SegmentNumber}: ${segment.SegmentLabel}`)
+                .join('\n')
+            : 'No segment metadata available';
+
+        const textContent = [
+          `Segmentation: ${segmentationInOHIF.label || 'Unnamed Segmentation'}`,
+          `Segments: ${metadata.length}`,
+          segmentInfo,
+        ].join('\n');
+
+        // Draw text with a background for better readability
+        const textWidth = 400;
+        const textHeight = 20 + metadata.length * 15;
+        page.drawRectangle({
+          x: 30,
+          y: canvas.height - textHeight - 30,
+          width: textWidth,
+          height: textHeight + 20,
+          color: rgb(0, 0, 0),
+          opacity: 0.7,
+        });
+
+        page.drawText(textContent, {
+          x: 50,
+          y: canvas.height - 50,
+          size: 12,
+          color: rgb(1, 1, 1), // White text
+          lineHeight: 15,
+        });
+
+        // 6. Generate and download the PDF
+        const pdfBytes = await pdfDoc.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.download = `${segmentationInOHIF.label || 'segmentation'}.pdf`;
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // Clean up
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+      } catch (error) {
+        console.error('Error generating segmentation PDF:', error);
+        // uiDialogService.showErrorDialog({
+        //   title: 'PDF Generation Failed',
+        //   message: error.message || 'An error occurred while generating the PDF',
+        // });
+        throw error;
+      }
+    },
     /**
      * Stores a segmentation based on the provided segmentationId into a specified data source.
      * The SeriesDescription is derived from user input or defaults to the segmentation label,
@@ -373,6 +526,9 @@ const commandsModule = ({
     },
     downloadSegmentation: {
       commandFn: actions.downloadSegmentation,
+    },
+    downloadSegmentationPdf: {
+      commandFn: actions.downloadSegmentationPdf,
     },
     storeSegmentation: {
       commandFn: actions.storeSegmentation,

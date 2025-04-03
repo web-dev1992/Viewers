@@ -71,6 +71,9 @@ export const CustomDropdownMenuContent = () => {
     onSegmentationDownload: segmentationId => {
       commandsManager.run('downloadSegmentation', { segmentationId });
     },
+    onSegmentationDownloadPdf: segmentationId => {
+      commandsManager.run('downloadSegmentationPdf', { segmentationId });
+    },
     downloadCSVSegmentationReport: segmentationId => {
       commandsManager.run('downloadCSVSegmentationReport', { segmentationId });
     },
@@ -113,6 +116,12 @@ export const CustomDropdownMenuContent = () => {
               disabled={!allowExport}
             >
               {t('Download DICOM SEG')}
+            </DropdownMenuItem>
+             <DropdownMenuItem
+              onClick={() => actions.onSegmentationDownloadPdf(segmentationId)}
+              disabled={!allowExport}
+            >
+              {t('Download DICOM SEG PDF')}
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuPortal>
